@@ -524,7 +524,7 @@ func IsExprConstTrue(where ast.ExprNode) bool {
 	return !notAlwaysTrue
 }
 
-// a helper function to get the where clause from a DML statement
+// a helper function to get the where clause from a DML statement(INSERT, UPDATE, DELETE, SELECT, UNION)
 func GetWhereExprFromDMLStmt(node ast.Node) (whereList []ast.ExprNode) {
 	switch stmt := node.(type) {
 	case *ast.SelectStmt, *ast.UnionStmt, *ast.InsertStmt, *ast.DeleteStmt, *ast.UpdateStmt:
