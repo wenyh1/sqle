@@ -367,6 +367,37 @@ func GetDefaultTable(stmt *ast.SelectStmt) *ast.TableName {
 	return nil
 }
 
+// a helper function to get UNION query type in the select statement is not 'UNION ALL'
+func CheckUnionNotAll(node ast.Node) bool {
+	switch stmt := node.(type) {
+	case *ast.UnionStmt:
+		for _, ss := range stmt.SelectList.Selects {
+			if ss.IsAfterUnionDistinct {
+				return true
+			}
+		}
+		for _, selectStmt := range GetSelectStmt(stmt) {
+			if CheckUnionNotAll(selectStmt) {
+				return true
+			}
+		}
+	case *ast.SelectStmt:
+		for _, selectStmt := range GetSelectStmt(stmt) {
+			if selectStmt.From != nil {
+				if source, ok := selectStmt.From.TableRefs.Left.(*ast.TableSource); ok {
+					if unionStmt, ok := source.Source.(*ast.UnionStmt); ok {
+						if CheckUnionNotAll(unionStmt) {
+							return true
+						}
+					}
+				}
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // a helper function to get the table source from join node
 func GetTableSourcesFromJoin(join *ast.Join) []*ast.TableSource {
 	sources := []*ast.TableSource{}
