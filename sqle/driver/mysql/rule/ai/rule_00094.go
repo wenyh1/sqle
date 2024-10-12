@@ -5,8 +5,7 @@ import (
 	"strings"
 
 	rulepkg "github.com/actiontech/sqle/sqle/driver/mysql/rule"
-	util2 "github.com/actiontech/sqle/sqle/driver/mysql/rule/ai/util"
-	"github.com/actiontech/sqle/sqle/driver/mysql/util"
+	util "github.com/actiontech/sqle/sqle/driver/mysql/rule/ai/util"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
 	"github.com/actiontech/sqle/sqle/pkg/params"
 	"github.com/pingcap/parser/ast"
@@ -65,128 +64,20 @@ func RuleSQLE00094(input *rulepkg.RuleHandlerInput) error {
 		return fmt.Errorf("param %s not found", rulepkg.DefaultSingleParamKeyName)
 	}
 
-	// 判断是否有违规函数的方法
-	checkViolationFunc := func(checkExpr ast.ExprNode, funcs []string) bool {
-		isExist := false
-		util.ScanWhereStmt(func(expr ast.ExprNode) bool {
-			switch pattern := expr.(type) {
-			case *ast.FuncCallExpr:
-				for _, name := range funcs {
-					if strings.EqualFold(pattern.FnName.O, name) {
-						isExist = true
-					}
-				}
-			case *ast.AggregateFuncExpr:
-				for _, name := range funcs {
-					if strings.EqualFold(pattern.F, name) {
-						isExist = true
-					}
-				}
-			}
-			return false
-		}, checkExpr)
-
-		return isExist
-	}
-
-	// select中： 查询列、where、having、group by、order by中可能涉及到的违规函数
-	// select xx(col1) from table where xx(col1)=? having xx(col1)=? order by xx(col1)
-	checkViolationFuncBySelect := func(selectNode *ast.SelectStmt, funcs []string) bool {
-		// select col1、col2...
-		for _, field := range selectNode.Fields.Fields {
-			if checkViolationFunc(field.Expr, funcs) {
-				return true
-			}
-		}
-		// where
-		if selectNode.Where != nil {
-			if checkViolationFunc(selectNode.Where, funcs) {
-				return true
-			}
-		}
-
-		// group by
-		if selectNode.GroupBy != nil {
-			for _, groupby := range selectNode.GroupBy.Items {
-				if checkViolationFunc(groupby.Expr, funcs) {
-					return true
-				}
-			}
-		}
-		// having
-		if selectNode.Having != nil {
-			if checkViolationFunc(selectNode.Having.Expr, funcs) {
-				return true
-			}
-		}
-
-		// order by
-		if selectNode.OrderBy != nil {
-			for _, orderby := range selectNode.OrderBy.Items {
-				if checkViolationFunc(orderby.Expr, funcs) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-
+	// 获取规则指定的函数名列表
 	if _, ok := input.Node.(ast.DMLNode); !ok {
 		return nil
 	}
-	selectVisitor := &util.SelectVisitor{}
-	input.Node.Accept(selectVisitor)
 
-	// 提取dml中所有的select语句（包括子查询
-	for _, selectNode := range selectVisitor.SelectList {
-		if checkViolationFuncBySelect(selectNode, violationsFuncs) {
-			rulepkg.AddResult(input.Res, input.Rule, SQLE00094, param)
-			return nil
-		}
-	}
-
-	switch stmt := input.Node.(type) {
-	case *ast.SelectStmt:
-		// 上面已处理
-	case *ast.DeleteStmt:
-		if whereList := util2.GetWhereExprFromDMLStmt(stmt); whereList != nil {
-			for _, where := range whereList {
-				if checkViolationFunc(where, violationsFuncs) {
-					rulepkg.AddResult(input.Res, input.Rule, SQLE00094, param)
-					return nil
-				}
-			}
-		}
-	case *ast.UpdateStmt:
-		// set ...
-		for _, setItem := range stmt.List {
-			if checkViolationFunc(setItem.Expr, violationsFuncs) {
+	funcNames := util.GetFuncName(input.Node)
+	for _, funcName := range funcNames {
+		// 检查函数名是否在规则指定的函数集合中
+		for _, name := range violationsFuncs {
+			if strings.EqualFold(funcName, name) {
 				rulepkg.AddResult(input.Res, input.Rule, SQLE00094, param)
 				return nil
 			}
 		}
-		// where ...
-		if whereList := util2.GetWhereExprFromDMLStmt(stmt); whereList != nil {
-			for _, where := range whereList {
-				if checkViolationFunc(where, violationsFuncs) {
-					rulepkg.AddResult(input.Res, input.Rule, SQLE00094, param)
-					return nil
-				}
-			}
-		}
-	case *ast.InsertStmt:
-		if stmt.Lists != nil {
-			for i := range stmt.Lists {
-				for j := range stmt.Lists[i] {
-					item := stmt.Lists[i][j]
-					if checkViolationFunc(item, violationsFuncs) {
-						rulepkg.AddResult(input.Res, input.Rule, SQLE00094, param)
-						return nil
-					}
-				}
-			}
-		}
-
 	}
 	return nil
 }

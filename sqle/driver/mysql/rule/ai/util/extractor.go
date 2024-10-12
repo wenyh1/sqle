@@ -25,6 +25,16 @@ func (fe *funcExtractor) Enter(in ast.Node) (node ast.Node, skipChildren bool) {
 		fe.expr = append(fe.expr, ExprFormat(n))
 		fe.funcNames = append(fe.funcNames, n.FnName.L)
 		return in, true
+	case *ast.AggregateFuncExpr:
+		for _, columnNameExpr := range n.Args {
+			col, ok := columnNameExpr.(*ast.ColumnNameExpr)
+			if !ok {
+				continue
+			}
+			fe.columnList = append(fe.columnList, col.Name)
+		}
+		fe.expr = append(fe.expr, ExprFormat(n))
+		fe.funcNames = append(fe.funcNames, n.F)
 	}
 	return in, false
 }

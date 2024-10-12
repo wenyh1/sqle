@@ -207,6 +207,15 @@ func TestRuleSQL00094(t *testing.T) {
 				Rows:  sqlmock.NewRows([]string{"type"}).AddRow("index"),
 			},
 		}, newTestResult().addResult(ruleName, "JSON_ARRAY,GROUP_CONCAT,CONCAT_WS,FIND_IN_SET"))
+
+	runAIRuleCase(rule, t, "case 26: select ...join 语句中 on 使用 CONCAT_WS 函数", "SELECT * FROM customers as a join customers as b on FIND_IN_sET('小王1', name) and CONCAT_WS(',', id,name) = 'hahah'",
+		session.NewAIMockContext().WithSQL("CREATE TABLE customers (id INT, name VARCHAR(255));"),
+		[]*AIMockSQLExpectation{
+			{
+				Query: "EXPLAIN SELECT * FROM customers as a join customers as b on FIND_IN_sET('小王1', name) and CONCAT_WS(',', id,name) = 'hahah';",
+				Rows:  sqlmock.NewRows([]string{"type"}).AddRow("index"),
+			},
+		}, newTestResult().addResult(ruleName, "JSON_ARRAY,GROUP_CONCAT,CONCAT_WS,FIND_IN_SET"))
 }
 
 // ==== Rule test code end ====

@@ -440,7 +440,7 @@ func GetTableAliasInfoFromJoin(join *ast.Join) []*TableAliasInfo {
 }
 
 // a helper function to extract all function name from a given expr Node of a SQL statement
-func GetFuncName(expr ast.ExprNode) []string {
+func GetFuncName(expr ast.Node) []string {
 	extractor := funcExtractor{}
 	expr.Accept(&extractor)
 
@@ -448,7 +448,7 @@ func GetFuncName(expr ast.ExprNode) []string {
 }
 
 // a helper function to extract function expressions from a given expr node of a SQL statement
-func GetFuncExpr(expr ast.ExprNode) []string {
+func GetFuncExpr(expr ast.Node) []string {
 	extractor := funcExtractor{}
 	expr.Accept(&extractor)
 
@@ -456,7 +456,7 @@ func GetFuncExpr(expr ast.ExprNode) []string {
 }
 
 // a helper function to extract math op expressions from a given expr node of a SQL statement
-func GetMathOpExpr(expr ast.ExprNode) []string {
+func GetMathOpExpr(expr ast.Node) []string {
 	extractor := mathOpExtractor{}
 	expr.Accept(&extractor)
 
@@ -464,7 +464,7 @@ func GetMathOpExpr(expr ast.ExprNode) []string {
 }
 
 // a helper function to get the column expr from a given expr node of a SQL statement
-func GetColumnNameInExpr(expr ast.ExprNode) []*ast.ColumnNameExpr {
+func GetColumnNameInExpr(expr ast.Node) []*ast.ColumnNameExpr {
 	if expr == nil {
 		return nil
 	}
@@ -475,9 +475,21 @@ func GetColumnNameInExpr(expr ast.ExprNode) []*ast.ColumnNameExpr {
 
 // a helper function to converts an AST (Abstract Syntax Tree) expression node into its string representation.
 func ExprFormat(node ast.ExprNode) string {
-	switch node.(type) {
+	switch n := node.(type) {
 	case *ast.DefaultExpr:
 		return "DEFAULT"
+	case *ast.AggregateFuncExpr:
+		// 参考 FuncCallExpr.Format的实现
+		writer := bytes.NewBufferString("")
+		fmt.Fprintf(writer, "%s(", n.F)
+		for i, arg := range n.Args {
+			arg.Format(writer)
+			if i != len(n.Args)-1 {
+				fmt.Fprint(writer, ", ")
+			}
+		}
+		fmt.Fprint(writer, ")")
+		return writer.String()
 	default:
 		writer := bytes.NewBufferString("")
 		node.Format(writer)
