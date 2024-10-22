@@ -1,10 +1,13 @@
 package ai
 
 import (
+	"fmt"
+
 	rulepkg "github.com/actiontech/sqle/sqle/driver/mysql/rule"
 	util "github.com/actiontech/sqle/sqle/driver/mysql/rule/ai/util"
+	"github.com/actiontech/sqle/sqle/driver/mysql/session"
 	driverV2 "github.com/actiontech/sqle/sqle/driver/v2"
-	"github.com/actiontech/sqle/sqle/log"
+	"github.com/actiontech/sqle/sqle/pkg/params"
 	"github.com/pingcap/parser/ast"
 )
 
@@ -16,13 +19,22 @@ func init() {
 	rh := rulepkg.RuleHandler{
 		Rule: driverV2.Rule{
 			Name:       SQLE00096,
-			Desc:       "对于MySQL的DML, 联合索引最左侧的字段必须出现在查询条件内",
-			Annotation: "当查询条件包含联合索引的最左侧字段时，查询语句才能更好的利用索引的特性：有序性、过滤性等",
-			Level:      driverV2.RuleLevelWarn,
-			Category:   rulepkg.RuleTypeIndexInvalidation,
+			Desc:       "在 MySQL 中, 不建议参与连接操作的表数量过多",
+			Annotation: "表关联越多，意味着各种驱动关系组合就越多，比较各种结果集的执行成本的代价也就越高，进而SQL查询性能会大幅度下降。",
+			Level:      driverV2.RuleLevelNotice,
+			Category:   rulepkg.RuleTypeDMLConvention,
+			Params: params.Params{
+				&params.Param{
+					Key:   rulepkg.DefaultSingleParamKeyName,
+					Value: "3",
+					Desc:  "参与表连接的表个数",
+					Type:  params.ParamTypeString,
+				},
+			},
 		},
-		Message: "对于MySQL的DML, 联合索引最左侧的字段必须出现在查询条件内. 不符合规范的字段: %v",
-		Func:    RuleSQLE00096,
+		Message:      "在 MySQL 中, 不建议参与连接操作的表数量过多",
+		AllowOffline: true,
+		Func:         RuleSQLE00096,
 	}
 	rulepkg.RuleHandlers = append(rulepkg.RuleHandlers, rh)
 	rulepkg.RuleHandlerMap[rh.Rule.Name] = rh
@@ -30,102 +42,105 @@ func init() {
 
 /*
 ==== Prompt start ====
-In MySQL, you should check if the SQL violate the rule(SQLE00096): "For dml, The leftmost field of the union index must appear within the query condition".
-You should follow the following logic:
-1. For SELECT... Statement, record the filter fields in the WHERE condition and the ON condition of the JOIN. When there is no WHERE condition or where condition is always True (for example, where 1=1 or where True), but there is grouping or sorting, note the grouped or sorted field as well. See if these fields are included in the union index list and are not the leftmost column of the union index, then the rule is violated. The acquisition of the table index needs to be obtained online.
-2. For INSERT... Statement to perform the same check as above on the SELECT clause in the INSERT statement.
-3. For UNION... Statement, does the same check as above for each SELECT clause in the statement.
+在 MySQL 中，您应该检查 SQL 是否违反了规则(SQLE00096): "在 MySQL 中，不建议参与连接操作的表数量过多.默认参数描述: 参与表连接的表个数, 默认参数值: 3"
+您应遵循以下逻辑：
+1. 对于 DML 语句（包括 SELECT、UPDATE、DELETE、INSERT ... SELECT、UNION），执行以下步骤：
+   a. 使用新创建的辅助函数GetTableNamesFromSQL获取涉及的表名节点，辅助函数内使用GetTableNames解析语法树以获取涉及的表名节点。
+   b. 去除重复的表名。
+   c. 如果表的总数超过预设的阈值，则报告违反规则。
+
+2. 对于 WITH 语句，执行以下步骤：
+   a. 使用新创建的辅助函数GetTableNamesFromSQL获取涉及的表名节点，辅助函数内使用GetTableNames解析语法树以获取涉及的表名节点。
+   b. 去除重复的表名。
+   c. 如果表的总数超过预设的阈值，则报告违反规则。
 ==== Prompt end ====
 */
 
 // ==== Rule code start ====
 func RuleSQLE00096(input *rulepkg.RuleHandlerInput) error {
-
-	var defaultTable string
-	var alias []*util.TableAliasInfo
-	getTableName := func(col *ast.ColumnNameExpr) string {
-		if col.Name.Table.L != "" {
-			for _, a := range alias {
-				if a.TableAliasName == col.Name.Table.String() {
-					return a.TableName
-				}
-			}
-			return col.Name.Table.L
-		}
-		return defaultTable
+	param := input.Rule.Params.GetParam(rulepkg.DefaultSingleParamKeyName)
+	if param == nil {
+		return fmt.Errorf("param %s not found", rulepkg.DefaultSingleParamKeyName)
 	}
 
-	switch stmt := input.Node.(type) {
-	case *ast.SelectStmt, *ast.UnionStmt, *ast.InsertStmt:
-		// "SELECT...", "INSERT...", "UNION..."
-		for _, selectStmt := range util.GetSelectStmt(stmt) {
+	threshold := param.Int()
+	if threshold == 0 {
+		return fmt.Errorf("param value should be greater than 0")
+	}
 
-			// get default table name
-			if t := util.GetDefaultTable(selectStmt); t != nil {
-				defaultTable = t.Name.O
+	var tableNames []string
+
+	// 内部匿名的辅助函数
+	getTableNamesFromSQL := func(ctx *session.Context, node ast.Node) []string {
+		var tableNames []string
+
+		getTableNameStr := func(t *ast.TableSource) string {
+			if table, ok := t.Source.(*ast.TableName); ok && table != nil {
+				schemaName := util.GetSchemaName(ctx, table.Schema.L)
+				return fmt.Sprintf("%s.%s", schemaName, table.Name.L)
 			}
+			return ""
+		}
 
-			// get table alias info
-			if selectStmt.From != nil && selectStmt.From.TableRefs != nil {
-				alias = util.GetTableAliasInfoFromJoin(selectStmt.From.TableRefs)
-			}
-
-			var (
-				table2colNames = map[string] /*table name*/ []*ast.ColumnName /*col names*/ {}
-			)
-			// get column names in join condition
-			if selectStmt.From != nil && selectStmt.From.TableRefs != nil && selectStmt.From.TableRefs.On != nil {
-				for _, col := range util.GetColumnNameInExpr(selectStmt.From.TableRefs.On.Expr) {
-					table2colNames[getTableName(col)] = append(table2colNames[getTableName(col)], col.Name)
+		// 获取所有的 join节点
+		joins := util.GetAllJoinsFromNode(node)
+		for _, join := range joins {
+			if t, ok := join.Left.(*ast.TableSource); ok && t != nil {
+				tName := getTableNameStr(t)
+				if tName != "" {
+					tableNames = append(tableNames, tName)
 				}
 			}
-
-			// get column names in where condition
-			for _, col := range util.GetColumnNameInExpr(selectStmt.Where) {
-				table2colNames[getTableName(col)] = append(table2colNames[getTableName(col)], col.Name)
-			}
-
-			// get column names in group by when there is no where condition
-			if selectStmt.Where == nil || util.IsExprConstTrue(selectStmt.Where) {
-				if selectStmt.GroupBy != nil {
-					for _, item := range selectStmt.GroupBy.Items {
-						for _, col := range util.GetColumnNameInExpr(item.Expr) {
-							table2colNames[getTableName(col)] = append(table2colNames[getTableName(col)], col.Name)
-						}
-					}
-				}
-			}
-
-			// get column names in order by when there is no where condition
-			if selectStmt.Where == nil || util.IsExprConstTrue(selectStmt.Where) {
-				if selectStmt.OrderBy != nil {
-					for _, item := range selectStmt.OrderBy.Items {
-						for _, col := range util.GetColumnNameInExpr(item.Expr) {
-							table2colNames[getTableName(col)] = append(table2colNames[getTableName(col)], col.Name)
-						}
-					}
-				}
-			}
-
-			for table, colNames := range table2colNames {
-				// get index of the table
-				indexesInfo, err := util.GetTableIndexes(input.Ctx, table, colNames[0].Schema.L)
-				if err != nil {
-					log.NewEntry().Errorf("get table indexes failed, sqle: %v, error: %v", input.Node.Text(), err)
-					return nil
-				}
-
-				for _, colName := range colNames {
-					for _, index := range indexesInfo {
-						// check if the column in the union index and is not the leftmost column
-						if colName.Name.String() == index.ColumnName && index.SeqInIndex != "1" {
-							rulepkg.AddResult(input.Res, input.Rule, SQLE00096, colName.String())
-						}
-					}
+			if t, ok := join.Right.(*ast.TableSource); ok && t != nil {
+				tName := getTableNameStr(t)
+				if tName != "" {
+					tableNames = append(tableNames, tName)
 				}
 			}
 		}
+		return tableNames
+	}
+	// 是否有表连接个数超过3个的
+	checkViolate := func(tables []string) bool {
+		tableMap := make(map[string]struct{})
+		for _, name := range tables {
+			tableMap[name] = struct{}{}
+		}
+		if len(tableMap) > threshold {
+			return true
+		}
+		return false
+	}
 
+	// 先看子查询中
+	switch node := input.Node.(type) {
+	case ast.DMLNode:
+		subs := util.GetSubquery(node)
+		for _, sub := range subs {
+			tableNames = getTableNamesFromSQL(input.Ctx, sub)
+			if checkViolate(tableNames) {
+				rulepkg.AddResult(input.Res, input.Rule, SQLE00096)
+				return nil
+			}
+		}
+	}
+
+	// 再看sql本身语句中
+	switch node := input.Node.(type) {
+	case *ast.InsertStmt:
+		tableNames = getTableNamesFromSQL(input.Ctx, node)
+		tableNames = tableNames[:len(tableNames)-1] // 移除最左边的table，因为最左边的table 是insert 而不是 join
+	case ast.DMLNode:
+		tableNames = getTableNamesFromSQL(input.Ctx, node)
+	// 注释掉未定义的 ast.WithStmt case
+	// case *ast.WithStmt:
+	// 	tableNames = getTableNamesFromSQL(input.Ctx, node)
+	default:
+		return nil
+	}
+
+	if checkViolate(tableNames) {
+		rulepkg.AddResult(input.Res, input.Rule, SQLE00096)
 	}
 	return nil
 }
