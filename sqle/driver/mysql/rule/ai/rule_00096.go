@@ -45,12 +45,12 @@ func init() {
 在 MySQL 中，您应该检查 SQL 是否违反了规则(SQLE00096): "在 MySQL 中，不建议参与连接操作的表数量过多.默认参数描述: 参与表连接的表个数, 默认参数值: 3"
 您应遵循以下逻辑：
 1. 对于 DML 语句（包括 SELECT、UPDATE、DELETE、INSERT ... SELECT、UNION），执行以下步骤：
-   a. 使用新创建的辅助函数GetAllJoinsFromNode获取涉及的表名节点，辅助函数内使用GetTableNames解析语法树以获取涉及的表名节点。
+   a. 使用新创建的辅助函数GetAllJoinsFromNode获取涉及的表名节点。
    b. 去除重复的表名。
    c. 如果表的总数超过预设的阈值，则报告违反规则。
 
 2. 对于 WITH 语句，执行以下步骤：
-   a. 使用新创建的辅助函数GetAllJoinsFromNode获取涉及的表名节点，辅助函数内使用GetTableNames解析语法树以获取涉及的表名节点。
+   a. 使用新创建的辅助函数GetAllJoinsFromNode获取涉及的表名节点。
    b. 去除重复的表名。
    c. 如果表的总数超过预设的阈值，则报告违反规则。
 ==== Prompt end ====
