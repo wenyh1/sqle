@@ -154,6 +154,8 @@ func GetIndexConstraintTypes() []ast.ConstraintType {
 		ast.ConstraintUniq,
 		ast.ConstraintUniqKey,
 		ast.ConstraintPrimaryKey,
+		ast.ConstraintFulltext,
+		ast.ConstraintSpatial,
 	}
 }
 
